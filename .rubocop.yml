@@ -11,7 +11,6 @@ inherit_gem:
 inherit_from:
   - .rubocop/rspec.yml
   - .rubocop/minitest.yml
-  - .rubocop/custom.yml
   - .rubocop/strict.yml
 
 AllCops:
