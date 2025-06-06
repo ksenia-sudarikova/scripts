@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 require "time"
 
-# OUTPUT_FILE = "data/test_data_large.csv"
-OUTPUT_FILE = "data/test_data_medium.csv"
-TARGET_SIZE_BYTES = (1024 * 1024 * 1024) / 2 # 500mb
-# TARGET_SIZE_BYTES = 2 * 1024 * 1024 * 1024 # 2GB
+OUTPUT_FILE = "data/test_data_large.csv"
+# OUTPUT_FILE = "data/test_data_medium.csv"
+# TARGET_SIZE_BYTES = (1024 * 1024 * 1024) / 2 # 500mb
+TARGET_SIZE_BYTES = 2 * 1024 * 1024 * 1024 # 2GB
 BATCH_SIZE = 500_000
 
 def fast_line(i)

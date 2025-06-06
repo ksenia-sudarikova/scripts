@@ -20,13 +20,10 @@ class Transaction
 end
 
 class DataSorter
-  CHUNK_SIZE = 200_000
   PID = Process.pid
-  MAX_OPEN_FILES = 255
   CHUNK_LIST_FILE_NAME = "tmp/chunks/list.txt"
-  BUFFER_SIZE = 2_097_152
 
-  def self.parse_line(line)
+  def parse_line(line)
     line.strip!
     parts = line.split(",", 5) # Limit to 5 parts to catch extra data
     raise StandardError, "Unknown Data in line #{line}" if parts.size > 4
@@ -34,30 +31,44 @@ class DataSorter
     Transaction.new(parts[0], parts[1], parts[2], parts[3])
   end
 
-  def self.sort_large_file(input_path, output_path, chunk_size = CHUNK_SIZE)
-    sort_lines_in_chunks(input_path, chunk_size)
+  def initialize(input_path, output_path, settings = {})
+    @input_path = input_path
+    @output_path = output_path
+    @chunk_size = settings.fetch(:chunk_size, 200_000)
+    @max_open_files = settings.fetch(:max_open_files, 255)
+    @buffer_size = settings.fetch(:buffer_size, 2_097_152)
 
-    merge_files(output_path)
-    check_sorted(output_path)
+    @log_level = settings.fetch(:log_level, :info)
+    puts "@log_level #{@log_level}"
+    puts "@chunk_size #{@chunk_size}"
+    puts "@max_open_files #{@max_open_files}"
+    puts "@buffer_size #{@buffer_size}"
   end
 
-  def self.sort_lines_in_chunks(input_path, chunk_size)
+  def run
+    sort_lines_in_chunks
+    merge_files
+    check_sorted
+  end
+
+  def sort_lines_in_chunks
     reset_files
     File.truncate(CHUNK_LIST_FILE_NAME, 0) if File.exist?(CHUNK_LIST_FILE_NAME)
 
     heap = BinaryHeap.new
     chunk_count = 0
 
-    File.open(input_path, "r") do |file|
+    File.open(@input_path, "r") do |file|
       file.each_line.with_index do |line, index|
         transaction = parse_line(line)
         heap.add(transaction.amount, transaction)
 
-        # When chunk is full or EOF
-        if (index + 1) % chunk_size == 0 || file.eof?
+        # when chunk is full or EOF
+        if (index + 1) % @chunk_size == 0 || file.eof?
           write_chunk(heap)
           chunk_count += 1
-          heap = BinaryHeap.new # Reset heap for next chunk
+          # reset heap for next chunk
+          heap = BinaryHeap.new
 
           if chunk_count % 3 == 0
             cleanup
@@ -68,7 +79,7 @@ class DataSorter
     end
   end
 
-  def self.write_chunk(heap)
+  def write_chunk(heap)
     file_path = "tmp/chunks/chunk#{SecureRandom.hex}.txt"
 
     File.open(file_path, "w") do |f|
@@ -80,33 +91,34 @@ class DataSorter
     File.open(CHUNK_LIST_FILE_NAME, "a") { |f| f.puts(file_path) }
   end
 
-  def self.cleanup
+  def cleanup
     GC.start
     ObjectSpace.each_object(Tempfile).each(&:close!)
   end
 
-  # It's a bit overengeniring to merge files in groups,
+  # It's a bit over engineering to merge files in groups,
   # but I had problem on my OS with to many opened files, when CHUNK_SIZE were lower
   # and this code actually can be useful for files bigger then 2Gb
-  def self.merge_files(output_file, max_open_files = MAX_OPEN_FILES)
+  def merge_files(output_path = @output_path)
     input_files = File.readlines(CHUNK_LIST_FILE_NAME, chomp: true)
 
     # merge groups of files that fit within MAX_OPEN_FILES limit
     intermediate_files = []
-    input_files.each_slice(max_open_files) do |file_group|
+    input_files.each_slice(@max_open_files) do |file_group|
       intermediate_files << merge_file_group(file_group)
     end
 
     # if we have more than one intermediate file, merge them recursively
     if intermediate_files.size > 1
-      merge_files(intermediate_files, output_file)
+      puts "intermediate_files"
+      merge_files(intermediate_files, output_path)
     else
       # final merge is just renaming the single intermediate file
-      File.rename(intermediate_files.first, output_file)
+      File.rename(intermediate_files.first, output_path)
     end
   end
 
-  def self.merge_file_group(files)
+  def merge_file_group(files)
     # read first lines from each file in group
     readers = files.map do |path|
       file = File.open(path, "rb")
@@ -116,7 +128,7 @@ class DataSorter
     output_temp = Tempfile.new("merge_#{PID}", binmode: true)
     # temporary save sorted lines in buffer
     # when buffer is bigger than capacity write it to file
-    output_buffer = String.new(capacity: BUFFER_SIZE)
+    output_buffer = String.new(capacity: @buffer_size)
 
     begin
       # load first lined to heap
@@ -138,8 +150,8 @@ class DataSorter
           heap.add(next_amount, {file: entry[:file], line: next_line})
         end
 
-        # flush buffer to file in BUFFER_SIZE chunks
-        if output_buffer.bytesize >= BUFFER_SIZE
+        # flush buffer to file in @settings.buffer_size chunks
+        if output_buffer.bytesize >= @buffer_size
           output_temp.write(output_buffer)
           output_buffer.clear
           print_process_memory "#{entry[:line]} buffer_was_cleared"
@@ -155,25 +167,27 @@ class DataSorter
     output_temp.path
   end
 
-  def self.reset_files
+  def reset_files
     Dir.glob("tmp/chunks/*").each { |f| File.delete(f) if File.file?(f) }
     Dir.rmdir("tmp/chunks") if Dir.exist?("tmp/chunks")
     Dir.mkdir("tmp") unless Dir.exist?("tmp")
     Dir.mkdir("tmp/chunks") unless Dir.exist?("tmp/chunks")
   end
 
-  def self.print_process_memory(message)
-    counts = ObjectSpace.count_objects
-    memory_kb = `ps -o rss= -p #{PID}`.to_i
-    puts "#{message} - Memory: #{memory_kb / 1024.0} MB | " \
-         "Strings: #{counts[:T_STRING]} | " \
-         "Arrays: #{counts[:T_ARRAY]} | " \
-         "Objects: #{counts[:T_OBJECT]}"
+  def print_process_memory(message)
+    if @log_level == :debug
+      counts = ObjectSpace.count_objects
+      memory_kb = `ps -o rss= -p #{PID}`.to_i
+      puts "#{message} - Memory: #{memory_kb / 1024.0} MB | " \
+           "Strings: #{counts[:T_STRING]} | " \
+           "Arrays: #{counts[:T_ARRAY]} | " \
+           "Objects: #{counts[:T_OBJECT]}"
+    end
   end
 
-  def self.check_sorted(file_path)
+  def check_sorted
     prev_amount = Float::INFINITY
-    File.foreach(file_path).with_index do |line, line_num|
+    File.foreach(@output_path).with_index do |line, line_num|
       current_amount = line.split(",")[3].to_f
       if current_amount > prev_amount
         puts "Предыдущее amount: #{prev_amount}, текущее: #{current_amount}"
