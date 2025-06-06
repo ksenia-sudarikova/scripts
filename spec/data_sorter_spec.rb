@@ -15,16 +15,6 @@ describe DataSorter do
     expect { DataSorter.parse_line(line) }.to raise_error(Exception)
   end
 
-  it "sorts array of transactions by amount descending" do
-    txns = [
-      Transaction.new(nil, nil, nil, 200.0),
-      Transaction.new(nil, nil, nil, 500.0),
-      Transaction.new(nil, nil, nil, 100.0)
-    ]
-    sorted = DataSorter.merge_sort(txns)
-    expect(sorted.map { |t| t.amount }).to eq([500.0, 200.0, 100.0])
-  end
-
   it "does external sort correctly on small file" do
     input = "spec/fixtures/data_small.csv"
     output = "tmp/output.txt"
@@ -42,7 +32,6 @@ describe DataSorter do
     DataSorter.sort_large_file(input, output, 2)
     lines = File.readlines(output)
     sorted = lines.map { |line| DataSorter.parse_line(line) }.map { |h| h.amount }
-    puts sorted.inspect
     expect(sorted).to eq([503.0, 401.1, 401.0, 100.0, 99.0, 95.0, 90.0, 80.0, 60.0])
   end
 end

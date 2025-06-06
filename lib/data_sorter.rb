@@ -1,6 +1,8 @@
 # frozen_string_literal: true
+
 require "tempfile"
 require "securerandom"
+require_relative "../lib/binary_heap"
 
 class Transaction
   attr_reader :timestamp, :transaction_id, :user_id, :amount
@@ -13,7 +15,7 @@ class Transaction
   end
 
   def to_line
-    "#{timestamp},#{transaction_id},#{user_id},#{format('%.2f', amount)}\n"
+    "#{timestamp},#{transaction_id},#{user_id},#{format("%.2f", amount)}\n"
   end
 end
 
@@ -43,7 +45,7 @@ class DataSorter
     reset_files
     File.truncate(CHUNK_LIST_FILE_NAME, 0) if File.exist?(CHUNK_LIST_FILE_NAME)
 
-    heap = BinaryMaxHeap.new
+    heap = BinaryHeap.new
     chunk_count = 0
 
     File.open(input_path, "r") do |file|
@@ -55,7 +57,7 @@ class DataSorter
         if (index + 1) % chunk_size == 0 || file.eof?
           write_chunk(heap)
           chunk_count += 1
-          heap = BinaryMaxHeap.new # Reset heap for next chunk
+          heap = BinaryHeap.new # Reset heap for next chunk
 
           if chunk_count % 3 == 0
             cleanup
@@ -93,12 +95,10 @@ class DataSorter
     intermediate_files = []
     input_files.each_slice(max_open_files) do |file_group|
       intermediate_files << merge_file_group(file_group)
-      print_process_memory("create intermediate_files,")
     end
 
     # if we have more than one intermediate file, merge them recursively
     if intermediate_files.size > 1
-      print_process_memory("merge intermediate_files,")
       merge_files(intermediate_files, output_file)
     else
       # final merge is just renaming the single intermediate file
@@ -120,11 +120,11 @@ class DataSorter
 
     begin
       # load first lined to heap
-      heap = BinaryMaxHeap.new
+      heap = BinaryHeap.new
       readers.each do |(file, line)|
         # fast parsing without object
-        amount = line.split(',', 4)[3].to_f
-        heap.add(amount, { file: file, line: line })
+        amount = line.split(",", 4)[3].to_f
+        heap.add(amount, {file: file, line: line})
       end
 
       until heap.empty?
@@ -133,9 +133,9 @@ class DataSorter
         output_buffer << entry[:line]
 
         # read next line, and put it to heap
-        if next_line = entry[:file].gets
-          next_amount = next_line.split(',', 4)[3].to_f
-          heap.add(next_amount, { file: entry[:file], line: next_line })
+        if (next_line = entry[:file].gets)
+          next_amount = next_line.split(",", 4)[3].to_f
+          heap.add(next_amount, {file: entry[:file], line: next_line})
         end
 
         # flush buffer to file in BUFFER_SIZE chunks
@@ -176,71 +176,11 @@ class DataSorter
     File.foreach(file_path).with_index do |line, line_num|
       current_amount = line.split(",")[3].to_f
       if current_amount > prev_amount
-        puts "Ошибка сортировки на строке #{line_num + 1}:"
         puts "Предыдущее amount: #{prev_amount}, текущее: #{current_amount}"
-        return false
+        raise "Ошибка сортировки на строке #{line_num + 1}:"
       end
       prev_amount = current_amount
     end
-    puts "Файл корректно отсортирован"
     true
-  end
-end
-
-
-# binary heap for merging
-class BinaryMaxHeap
-  Entry = Struct.new(:priority, :value)
-
-  def initialize
-    @heap = []
-  end
-
-  def add(priority, value)
-    @heap << Entry.new(priority, value)
-    bubble_up(@heap.size - 1)
-  end
-
-  def pop
-    return nil if @heap.empty?
-    swap(0, @heap.size - 1)
-    item = @heap.pop
-    bubble_down(0) unless @heap.empty?
-
-    item.value
-  end
-
-  def empty?
-    @heap.empty?
-  end
-
-  def length
-    @heap.length
-  end
-
-  private
-
-  def bubble_up(index)
-    parent = (index - 1) / 2
-    return if index <= 0 || @heap[parent].priority >= @heap[index].priority
-    swap(index, parent)
-    bubble_up(parent)
-  end
-
-  def bubble_down(index)
-    left = 2 * index + 1
-    right = 2 * index + 2
-    largest = index
-
-    largest = left if left < @heap.size && @heap[left].priority > @heap[largest].priority
-    largest = right if right < @heap.size && @heap[right].priority > @heap[largest].priority
-    return if largest == index
-
-    swap(index, largest)
-    bubble_down(largest)
-  end
-
-  def swap(i, j)
-    @heap[i], @heap[j] = @heap[j], @heap[i]
   end
 end
