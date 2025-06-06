@@ -20,12 +20,14 @@ end
 class DataSorter
   CHUNK_SIZE = 200_000
   PID = Process.pid
-  MAX_OPEN_FILES = 220
+  # i have limit 256 on my Mac Os u can increase it to be faster
+  MAX_OPEN_FILES = 255
   CHUNK_LIST_FILE_NAME = "tmp/chunks/list.txt"
+  BUFFER_SIZE = 2_097_152
 
   def self.parse_line(line)
     line.strip!
-    parts = line.split(',', 5) # Limit to 5 parts to catch extra data
+    parts = line.split(",", 5) # Limit to 5 parts to catch extra data
     raise StandardError, "Unknown Data in line #{line}" if parts.size > 4
 
     Transaction.new(parts[0], parts[1], parts[2], parts[3])
@@ -92,12 +94,12 @@ class DataSorter
     File.open(CHUNK_LIST_FILE_NAME, "a") { |f| f.puts(file_path) }
   end
 
-  def self.merge_files(output_file)
+  def self.merge_files(output_file, max_open_files = MAX_OPEN_FILES)
     input_files = File.readlines(CHUNK_LIST_FILE_NAME, chomp: true)
 
     # First level merging - merge groups of files that fit within file descriptor limit
     intermediate_files = []
-    input_files.each_slice(MAX_OPEN_FILES) do |file_group|
+    input_files.each_slice(max_open_files) do |file_group|
       intermediate_files << merge_file_group(file_group)
       print_process_memory("create intermediate_files,")
     end
@@ -113,37 +115,50 @@ class DataSorter
   end
 
   def self.merge_file_group(files)
-    # Open all files and prepare readers
-    file_handles = files.map { |f| File.open(f, 'r') }
-    output_temp = Tempfile.new("merge_#{PID}")
+    # Read first lines from each file in group
+    # puts files.inspect
+    readers = files.map do |path|
+      file = File.open(path, "rb")
+      [file, file.gets]
+    end.reject { |(_, line)| line.nil? }
+
+    output_temp = Tempfile.new("merge_#{PID}", binmode: true)
+    # temporary save sorted lines in buffer
+    # when buffer is bigger than capacity write it to file
+    output_buffer = String.new(capacity: BUFFER_SIZE)
 
     begin
-      # Initialize with first line from each file
-      entries = file_handles.map do |fh|
-        line = fh.gets
-        line ? { data: parse_line(line), handle: fh } : nil
-      end.compact
-
-      # Use a max-heap to efficiently find the next largest amount (for descending order)
+      # load first lined to heap
       heap = BinaryMaxHeap.new
-      entries.each { |e| heap.add(e[:data].amount, e) }
-      puts "heap length #{heap.length}"
-      print_process_memory("when we have heap,")
-      # Merge the files
-      until heap.empty?
-        largest = heap.pop
-        print_process_memory("until heap.empty? #{largest[:data].to_line}")
-        output_temp.write(largest[:data].to_line)
+      readers.each do |(file, line)|
+        # Fast parsing without intermediate object
+        amount = line.split(',', 4)[3].to_f
+        puts amount.inspect
+        heap.add(amount, { file: file, line: line })
+      end
 
-        # Read next line from the file we just took a line from
-        next_line = largest[:handle].gets
-        if next_line
-          new_entry = { data: parse_line(next_line), handle: largest[:handle] }
-          heap.add(new_entry[:data].amount, new_entry)
+      until heap.empty?
+        # put first line from heap to buffer
+        entry = heap.pop
+        output_buffer << entry[:line]
+
+        # Read next line immediately, and put it to heap
+        if next_line = entry[:file].gets
+          next_amount = next_line.split(',', 4)[3].to_f
+          heap.add(next_amount, { file: entry[:file], line: next_line })
+        end
+
+        # Flush buffer to file in BUFFER_SIZE chunks
+        if output_buffer.bytesize >= BUFFER_SIZE
+          output_temp.write(output_buffer)
+          output_buffer.clear
+          print_process_memory "#{entry[:line]} buffer_was_cleared"
         end
       end
+
+      output_temp.write(output_buffer) unless output_buffer.empty?
     ensure
-      file_handles.each(&:close)
+      readers.each { |(file, _)| file.close }
       output_temp.close
     end
 
